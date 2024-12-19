@@ -883,33 +883,40 @@ mod fbcode {
         > = HashMap::new();
         let client = connect_build_event_server().await?;
         let mut recv = UnboundedReceiverStream::new(recv).flat_map(|v| stream::iter(v));
+        let result_uri = std::env::var("BES_RESULT").ok();
         while let Some(event) = recv.next().await {
-            let dbg_trace_id = event.event.trace_id.clone();
-            //println!("event_sink_loop event {:?}", &dbg_trace_id);
+            // let dbg_trace_id = event.event.trace_id.clone();
+            // println!("event_sink_loop event {:?}", &dbg_trace_id);
             if let Some((send, _)) = handlers.get(&event.event.trace_id) {
-                //println!("event_sink_loop redirect {:?}", &dbg_trace_id);
+                // println!("event_sink_loop redirect {:?}", &dbg_trace_id);
                 send.send(event)
                     .unwrap_or_else(|e| println!("build event send failed {:?}", e));
             } else {
-                //println!("event_sink_loop new handler {:?}", event.event.trace_id);
+                // println!("event_sink_loop new handler {:?}", event.event.trace_id);
                 let (send, recv) = mpsc::unbounded_channel::<BuckEvent>();
                 let mut client = client.clone();
-                let dbg_trace_id = dbg_trace_id.clone();
+                let result_uri = result_uri.clone();
+                // let dbg_trace_id = dbg_trace_id.clone();
                 let trace_id = event.event.trace_id.clone();
                 let handler = tokio::spawn(async move {
                     let recv = UnboundedReceiverStream::new(recv);
                     let request = Request::new(stream_build_tool_events(
-                        trace_id,
+                        trace_id.clone(),
                         buck_to_bazel_events(recv),
                     ));
-                    println!("new handler request {:?}", &dbg_trace_id);
-                    println!("BES request {:?}", &dbg_trace_id);
+                    if let Some(result_uri) = result_uri.as_ref() {
+                        println!("BES results: {}{}", &result_uri, &trace_id);
+                    }
+                    // println!("BES request {:?}", &dbg_trace_id);
                     let response = client.publish_build_tool_event_stream(request).await?;
-                    println!("BES response {:?}", &dbg_trace_id);
+                    // println!("BES response {:?}", &dbg_trace_id);
                     let mut inbound = response.into_inner();
                     while let Some(_ack) = inbound.message().await? {
                         // TODO: Handle ACKs properly and add retry.
-                        //println!("ACK  {:?}", ack);
+                        // println!("ACK  {:?}", ack);
+                    }
+                    if let Some(result_uri) = result_uri.as_ref() {
+                        println!("BES results: {}{}", &result_uri, &trace_id);
                     }
                     Ok(())
                 });
@@ -1023,8 +1030,8 @@ fn new_remote_event_sink_if_fbcode(
     {
         let _ = (fb, config);
         match std::env::var("BES_URI") {
-          Ok(_) => Ok(Some(RemoteEventSink::new()?)),
-          _ => Ok(None),
+            Ok(_) => Ok(Some(RemoteEventSink::new()?)),
+            _ => Ok(None),
         }
     }
 }
