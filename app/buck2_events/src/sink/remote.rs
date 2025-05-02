@@ -350,14 +350,12 @@ mod fbcode {
 #[cfg(not(fbcode_build))]
 mod fbcode {
     use std::collections::HashMap;
-    use std::env::VarError;
     use std::str::FromStr;
     use std::sync::Arc;
     use std::thread::JoinHandle;
     use std::time::Duration;
 
     use allocative::Allocative;
-    use anyhow::Context;
     use async_stream::stream;
     use bazel_event_publisher_proto::build_event_stream;
     use bazel_event_publisher_proto::build_event_stream::BuildEventId;
@@ -367,9 +365,11 @@ mod fbcode {
     use bazel_event_publisher_proto::google::devtools::build::v1::PublishBuildToolEventStreamRequest;
     use bazel_event_publisher_proto::google::devtools::build::v1::StreamId;
     use bazel_event_publisher_proto::google::devtools::build::v1::publish_build_event_client::PublishBuildEventClient;
+    use buck2_core::buck2_env;
     use buck2_data;
     use buck2_data::BuildCommandStart;
     use buck2_error::BuckErrorContext;
+    use buck2_error::buck2_error;
     use buck2_util::future::try_join_all;
     use dupe::Dupe;
     use futures::Stream;
@@ -413,7 +413,7 @@ mod fbcode {
     }
 
     impl FromStr for HttpHeader {
-        type Err = anyhow::Error;
+        type Err = buck2_error::Error;
 
         fn from_str(s: &str) -> Result<Self, Self::Err> {
             let mut iter = s.split(':');
@@ -422,7 +422,8 @@ mod fbcode {
                     key: key.trim().to_owned(),
                     value: value.trim().to_owned(),
                 }),
-                _ => Err(anyhow::anyhow!(
+                _ => Err(buck2_error!(
+                    buck2_error::ErrorTag::Input,
                     "Invalid header (expect exactly one `:`): `{}`",
                     s
                 )),
@@ -431,14 +432,17 @@ mod fbcode {
     }
 
     /// Replace occurrences of $FOO in a string with the value of the env var $FOO.
-    fn substitute_env_vars(s: &str) -> anyhow::Result<String> {
-        substitute_env_vars_impl(s, |v| std::env::var(v))
+    fn substitute_env_vars(s: &str) -> buck2_error::Result<String> {
+        substitute_env_vars_impl(s, |v| {
+            // TODO: add From<VarError>
+            std::env::var(v).or_else(|e| Err(buck2_error::Error::from(e.to_string())))
+        })
     }
 
     fn substitute_env_vars_impl(
         s: &str,
-        getter: impl Fn(&str) -> Result<String, VarError>,
-    ) -> anyhow::Result<String> {
+        getter: impl Fn(&str) -> buck2_error::Result<String>,
+    ) -> buck2_error::Result<String> {
         static ENV_REGEX: Lazy<Regex> =
             Lazy::new(|| Regex::new("\\$[a-zA-Z_][a-zA-Z_0-9]*").unwrap());
 
@@ -448,8 +452,8 @@ mod fbcode {
         for mat in ENV_REGEX.find_iter(s) {
             out.push_str(&s[last_idx..mat.start()]);
             let var = &mat.as_str()[1..];
-            let val =
-                getter(var).with_context(|| format!("Error substituting `{}`", mat.as_str()))?;
+            let val = getter(var)
+                .with_buck_error_context(|| format!("Error substituting `{}`", mat.as_str()))?;
             out.push_str(&val);
             last_idx = mat.end();
         }
@@ -467,7 +471,7 @@ mod fbcode {
     }
 
     impl InjectHeadersInterceptor {
-        pub fn new(headers: &[HttpHeader]) -> anyhow::Result<Self> {
+        pub fn new(headers: &[HttpHeader]) -> buck2_error::Result<Self> {
             let headers = headers
                 .iter()
                 .map(|h| {
@@ -478,18 +482,20 @@ mod fbcode {
                     let value = substitute_env_vars(&h.value)?;
 
                     let key = MetadataKey::<metadata::Ascii>::from_bytes(key.as_bytes())
-                        .with_context(|| format!("Invalid key in header: `{}: {}`", key, value))?;
+                        .with_buck_error_context(|| {
+                            format!("Invalid key in header: `{}: {}`", key, value)
+                        })?;
 
-                    let value = MetadataValue::try_from(&value).with_context(|| {
+                    let value = MetadataValue::try_from(&value).with_buck_error_context(|| {
                         format!("Invalid value in header: `{}: {}`", key, value)
                     })?;
 
-                    anyhow::Ok((key, value))
+                    buck2_error::Ok((key, value))
                 })
-                .collect::<Result<_, _>>()
-                .context("Error converting headers")?;
+                .collect::<buck2_error::Result<_>>()
+                .buck_error_context("Error converting headers")?;
 
-            Ok(Self {
+            buck2_error::Ok(Self {
                 headers: Arc::new(headers),
             })
         }
@@ -509,8 +515,11 @@ mod fbcode {
 
     type GrpcService = InterceptedService<Channel, InjectHeadersInterceptor>;
 
-    async fn connect_build_event_server() -> anyhow::Result<PublishBuildEventClient<GrpcService>> {
-        let uri = std::env::var("BES_URI")?.parse()?;
+    async fn connect_build_event_server()
+    -> buck2_error::Result<PublishBuildEventClient<GrpcService>> {
+        let uri = buck2_env!("BES_URI")?
+            .expect("BES_URI is not set")
+            .parse()?;
         let mut channel = Channel::builder(uri);
         let tls_config = ClientTlsConfig::new();
         {
@@ -526,7 +535,7 @@ mod fbcode {
         let endpoint = channel
             .connect()
             .await
-            .context("connecting to Bazel event stream gRPC server")?;
+            .buck_error_context("connecting to Bazel event stream gRPC server")?;
         let mut headers = vec![];
         for hdr in std::env::var("BES_HEADERS")
             .unwrap_or("".to_owned())
@@ -873,12 +882,12 @@ mod fbcode {
             })
     }
 
-    async fn event_sink_loop(recv: UnboundedReceiver<Vec<BuckEvent>>) -> anyhow::Result<()> {
+    async fn event_sink_loop(recv: UnboundedReceiver<Vec<BuckEvent>>) -> buck2_error::Result<()> {
         let mut handlers: HashMap<
             String,
             (
                 UnboundedSender<BuckEvent>,
-                tokio::task::JoinHandle<anyhow::Result<()>>,
+                tokio::task::JoinHandle<buck2_error::Result<()>>,
             ),
         > = HashMap::new();
         let client = connect_build_event_server().await?;
@@ -926,13 +935,13 @@ mod fbcode {
         //println!("event_sink_loop recv CLOSED");
         // TODO: handle closure and retry.
         // close send handles and await all handlers.
-        let handlers: Vec<tokio::task::JoinHandle<anyhow::Result<()>>> =
+        let handlers: Vec<tokio::task::JoinHandle<buck2_error::Result<()>>> =
             handlers.into_values().map(|(_, handler)| handler).collect();
         // TODO: handle retry.
         try_join_all(handlers)
             .await?
             .into_iter()
-            .collect::<anyhow::Result<Vec<()>>>()?;
+            .collect::<buck2_error::Result<Vec<()>>>()?;
         Ok(())
     }
 

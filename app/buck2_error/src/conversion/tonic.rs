@@ -15,6 +15,22 @@ impl From<tonic::transport::Error> for crate::Error {
     }
 }
 
+impl From<tonic::metadata::errors::InvalidMetadataKey> for crate::Error {
+    #[cold]
+    #[track_caller]
+    fn from(value: tonic::metadata::errors::InvalidMetadataKey) -> Self {
+        crate::conversion::from_any_with_tag(value, crate::ErrorTag::Tonic)
+    }
+}
+
+impl From<tonic::metadata::errors::InvalidMetadataValue> for crate::Error {
+    #[cold]
+    #[track_caller]
+    fn from(value: tonic::metadata::errors::InvalidMetadataValue) -> Self {
+        crate::conversion::from_any_with_tag(value, crate::ErrorTag::Tonic)
+    }
+}
+
 impl From<tonic::Status> for crate::Error {
     #[cold]
     #[track_caller]
