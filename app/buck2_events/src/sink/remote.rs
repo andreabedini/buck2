@@ -551,6 +551,19 @@ mod fbcode {
         Ok(client)
     }
 
+    fn make_bazel_build_event(
+        timestamp: std::time::SystemTime,
+        bes_event: build_event_stream::BuildEvent,
+    ) -> v1::BuildEvent {
+        v1::BuildEvent {
+            event_time: Some(timestamp.into()),
+            event: Some(v1::build_event::Event::BazelEvent(prost_types::Any {
+                type_url: "type.googleapis.com/build_event_stream.BuildEvent".to_owned(),
+                value: bes_event.encode_to_vec(),
+            })),
+        }
+    }
+
     fn buck_to_bazel_events<S: Stream<Item = BuckEvent>>(
         events: S,
     ) -> impl Stream<Item = v1::BuildEvent> {
@@ -568,7 +581,7 @@ mod fbcode {
                                 match command.data.as_ref() {
                                     None => {},
                                     Some(buck2_data::command_start::Data::Build(BuildCommandStart {})) => {
-                                        let bes_event = build_event_stream::BuildEvent {
+                                        yield make_bazel_build_event(event.timestamp(), build_event_stream::BuildEvent {
                                             id: Some(build_event_stream::BuildEventId { id: Some(build_event_stream::build_event_id::Id::Started(build_event_stream::build_event_id::BuildStartedId {})) }),
                                             children: vec![],
                                             last_message: false,
@@ -583,15 +596,7 @@ mod fbcode {
                                                 workspace_directory: "UNKNOWN".to_owned(),
                                                 server_pid: std::process::id() as i64,
                                             })),
-                                        };
-                                        let bazel_event = v1::build_event::Event::BazelEvent(prost_types::Any {
-                                            type_url: "type.googleapis.com/build_event_stream.BuildEvent".to_owned(),
-                                            value: bes_event.encode_to_vec(),
                                         });
-                                        yield v1::BuildEvent {
-                                            event_time: Some(event.timestamp().into()),
-                                            event: Some(bazel_event),
-                                        };
                                     },
                                     Some(_) => {},
                                 }
@@ -607,7 +612,7 @@ mod fbcode {
                                 match label {
                                     None => {},
                                     Some(label) => {
-                                        let bes_event = build_event_stream::BuildEvent {
+                                        yield make_bazel_build_event(event.timestamp(), build_event_stream::BuildEvent {
                                             id: Some(build_event_stream::BuildEventId { id: Some(build_event_stream::build_event_id::Id::TargetConfigured(build_event_id::TargetConfiguredId {
                                                 label: label.clone(),
                                                 aspect: "".to_owned(),
@@ -619,17 +624,9 @@ mod fbcode {
                                                 test_size: 0,
                                                 tag: vec![],
                                             })),
-                                        };
-                                        let bazel_event = v1::build_event::Event::BazelEvent(prost_types::Any {
-                                            type_url: "type.googleapis.com/build_event_stream.BuildEvent".to_owned(),
-                                            value: bes_event.encode_to_vec(),
                                         });
-                                        yield v1::BuildEvent {
-                                            event_time: Some(event.timestamp().into()),
-                                            event: Some(bazel_event),
-                                        };
 
-                                        let bes_event = build_event_stream::BuildEvent {
+                                        yield make_bazel_build_event(event.timestamp(), build_event_stream::BuildEvent {
                                             id: Some(build_event_stream::BuildEventId { id: Some(build_event_stream::build_event_id::Id::Pattern(build_event_id::PatternExpandedId {
                                                 pattern: vec![label.clone()],
                                             })) }),
@@ -643,15 +640,7 @@ mod fbcode {
                                             payload: Some(build_event_stream::build_event::Payload::Expanded(bazel_event_publisher_proto::build_event_stream::PatternExpanded {
                                                 test_suite_expansions: vec![],
                                             })),
-                                        };
-                                        let bazel_event = v1::build_event::Event::BazelEvent(prost_types::Any {
-                                            type_url: "type.googleapis.com/build_event_stream.BuildEvent".to_owned(),
-                                            value: bes_event.encode_to_vec(),
                                         });
-                                        yield v1::BuildEvent {
-                                            event_time: Some(event.timestamp().into()),
-                                            event: Some(bazel_event),
-                                        };
                                     },
                                 }
                             },
@@ -670,7 +659,7 @@ mod fbcode {
                                         for ((label, config), actions) in target_actions.into_iter() {
                                             let success = actions.iter().all(|(_, success)| *success);
                                             let children: Vec<_> = actions.into_iter().map(|(id, _)| id).collect();
-                                            let bes_event = build_event_stream::BuildEvent {
+                                            yield make_bazel_build_event(event.timestamp(), build_event_stream::BuildEvent {
                                                 id: Some(build_event_stream::BuildEventId { id: Some(build_event_stream::build_event_id::Id::TargetCompleted(build_event_id::TargetCompletedId {
                                                     label: label,
                                                     configuration: Some(build_event_id::ConfigurationId { id: config }),
@@ -690,18 +679,10 @@ mod fbcode {
                                                     test_timeout: None,
                                                     failure_detail: None,
                                                 })),
-                                            };
-                                            let bazel_event = v1::build_event::Event::BazelEvent(prost_types::Any {
-                                                type_url: "type.googleapis.com/build_event_stream.BuildEvent".to_owned(),
-                                                value: bes_event.encode_to_vec(),
                                             });
-                                            yield v1::BuildEvent {
-                                                event_time: Some(event.timestamp().into()),
-                                                event: Some(bazel_event),
-                                            };
                                         }
 
-                                        let bes_event = build_event_stream::BuildEvent {
+                                        yield make_bazel_build_event(event.timestamp(), build_event_stream::BuildEvent {
                                             id: Some(build_event_stream::BuildEventId { id: Some(build_event_stream::build_event_id::Id::BuildFinished(build_event_stream::build_event_id::BuildFinishedId {})) }),
                                             children: vec![],
                                             last_message: true,
@@ -725,15 +706,7 @@ mod fbcode {
                                                 // TODO: convert Buck2 ErrorReport
                                                 failure_detail: None,
                                             })),
-                                        };
-                                        let bazel_event = v1::build_event::Event::BazelEvent(prost_types::Any {
-                                            type_url: "type.googleapis.com/build_event_stream.BuildEvent".to_owned(),
-                                            value: bes_event.encode_to_vec(),
                                         });
-                                        yield v1::BuildEvent {
-                                            event_time: Some(event.timestamp().into()),
-                                            event: Some(bazel_event),
-                                        };
                                         break;
                                     },
                                     Some(_) => {},
@@ -814,7 +787,7 @@ mod fbcode {
                                         category: None, // TODO
                                     })
                                 };
-                                let bes_event = build_event_stream::BuildEvent {
+                                yield make_bazel_build_event(event.timestamp(), build_event_stream::BuildEvent {
                                     id: Some(action_id),
                                     children: vec![],
                                     last_message: false,
@@ -834,15 +807,7 @@ mod fbcode {
                                         end_time: None,
                                         strategy_details: vec![],
                                     })),
-                                };
-                                let bazel_event = v1::build_event::Event::BazelEvent(prost_types::Any {
-                                    type_url: "type.googleapis.com/build_event_stream.BuildEvent".to_owned(),
-                                    value: bes_event.encode_to_vec(),
                                 });
-                                yield v1::BuildEvent {
-                                    event_time: Some(event.timestamp().into()),
-                                    event: Some(bazel_event),
-                                };
                             },
                             Some(_) => {},
                         }
